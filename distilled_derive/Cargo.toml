@@ -13,3 +13,5 @@ darling = "0.20.11"
 proc-macro2 = "1.0.94"
 quote = "1.0.40"
 syn = "2.0.100"
+
+# distilled = { path = "../distilled", default-features = false }

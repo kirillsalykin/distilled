@@ -1,6 +1,4 @@
 [workspace]
 resolver = "2"
-members = ["distill", "distill_derive", "distill_derive_tests"]
-
-[workspace.package]
-rust-version = "1.81"
+members = ["distilled", "distilled_derive"]
+#, "distill_derive_tests"

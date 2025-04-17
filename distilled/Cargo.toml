@@ -1,0 +1,17 @@
+[package]
+name = "distilled"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "distilled"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0.209", features = ["derive"] }
+serde_json = { version = "1.0.140" }
+distilled_derive = { path = "../distilled_derive", optional = true }
+
+[features]
+default = []
+derive = ["distilled_derive"]
