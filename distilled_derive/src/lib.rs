@@ -1,42 +1,52 @@
-// extern crate distilled;
 extern crate proc_macro2;
 
-use proc_macro::TokenStream;
+use darling::ast::{Data, Style};
+use darling::{FromDeriveInput, FromField};
 use quote::quote;
-use syn::Data;
-use syn::DeriveInput;
+use syn::{DeriveInput, parse_macro_input};
+
+#[derive(FromDeriveInput)]
+#[darling(supports(struct_named, struct_tuple))]
+struct Input {
+    ident: syn::Ident,
+    data: Data<(), Field>,
+}
+
+#[derive(FromField)]
+struct Field {
+    #[darling(default)]
+    ident: Option<syn::Ident>,
+    ty: syn::Type,
+}
 
 #[proc_macro_derive(Distilled)]
-pub fn distill_derive(item: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(item as DeriveInput);
-    let ident = &input.ident;
-    let expanded = match &input.data {
-        // Named‐field structs → pull out `named` directly
-        Data::Struct(syn::DataStruct {
-            fields: syn::Fields::Named(syn::FieldsNamed { named, .. }),
-            ..
-        }) => derive_named(ident, named),
+pub fn distill_derive(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let derive_input = parse_macro_input!(item as DeriveInput);
 
-        // Newtypes (1‑field tuple structs)
-        Data::Struct(syn::DataStruct {
-            fields: syn::Fields::Unnamed(syn::FieldsUnnamed { unnamed, .. }),
-            ..
-        }) if unnamed.len() == 1 => {
-            let ty = &unnamed.first().unwrap().ty;
-            derive_newtype(ident, ty)
-        }
+    let input = match Input::from_derive_input(&derive_input) {
+        Ok(i) => i,
+        Err(err) => return err.write_errors().into(),
+    };
 
-        _ => unimplemented!("`Distilled` only supports named structs and newtypes"),
+    let name = &input.ident;
+
+    let (style, fields) = match input.data {
+        Data::Struct(ds) => ds.split(),
+        _ => unreachable!("Distilled only supports structs & struct tuples"),
+    };
+
+    let expanded = match style {
+        Style::Struct => expand_named(name, &fields),
+        Style::Tuple => expand_tuple(name, &fields),
+        _ => unreachable!(),
     };
 
     expanded.into()
 }
 
-fn derive_named(
-    struct_ident: &syn::Ident,
-    fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
-) -> proc_macro2::TokenStream {
+fn expand_named(struct_ident: &syn::Ident, fields: &[Field]) -> proc_macro2::TokenStream {
     let num_fields = fields.len();
+
     let distillers = fields.iter().map(|f| {
         let name = f.ident.as_ref().unwrap().to_string();
         let ident = f.ident.as_ref().unwrap();
@@ -55,9 +65,9 @@ fn derive_named(
         let ident = f.ident.as_ref().unwrap();
         let name = ident.to_string();
         quote! {
-          if #ident.is_err() {
-            errors.insert(#name.into(), #ident.err().unwrap());
-          }
+            if #ident.is_err() {
+                errors.insert(#name.into(), #ident.err().unwrap());
+            }
         }
     });
 
@@ -82,14 +92,49 @@ fn derive_named(
     }
 }
 
-fn derive_newtype(struct_ident: &syn::Ident, inner_ty: &syn::Type) -> proc_macro2::TokenStream {
+fn expand_tuple(struct_ident: &syn::Ident, fields: &[Field]) -> proc_macro2::TokenStream {
+    let num_fields = fields.len();
+
+    let distillers = fields.iter().enumerate().map(|(i, f)| {
+        let idx = syn::Index::from(i);
+        let ty = &f.ty;
+        let var = syn::Ident::new(&format!("field_{}", i), proc_macro2::Span::call_site());
+        quote! { let #var = <#ty>::distill(value.get(#idx)); }
+    });
+    let checks = (0..num_fields).map(|i| {
+        let var = syn::Ident::new(&format!("field_{}", i), proc_macro2::Span::call_site());
+        quote! { #var.is_ok() }
+    });
+    let unpack = (0..num_fields).map(|i| {
+        let var = syn::Ident::new(&format!("field_{}", i), proc_macro2::Span::call_site());
+        quote! { #var.unwrap() }
+    });
+    let collect_errors = (0..num_fields).map(|i| {
+        let var = syn::Ident::new(&format!("field_{}", i), proc_macro2::Span::call_site());
+        let name = i.to_string();
+        quote! {
+            if #var.is_err() {
+                errors.insert(#name.into(), #var.err().unwrap());
+            }
+        }
+    });
+
     quote! {
         impl ::distilled::Distilled for #struct_ident {
             fn distill<'a, T: Into<Option<&'a serde_json::Value>>>(
                 value: T
             ) -> Result<Self, ::distilled::Error> {
-                let inner = <#inner_ty>::distill(value)?;
-                Ok(#struct_ident(inner))
+                let value = value.into().ok_or_else(|| Error::entry("missing_field"))?;
+                let mut errors = std::collections::HashMap::with_capacity(#num_fields);
+
+                #(#distillers)*
+
+                if #(#checks)&&* {
+                    Ok(#struct_ident( #(#unpack),* ))
+                } else {
+                    #(#collect_errors)*
+                    Err(Error::Struct(errors))
+                }
             }
         }
     }
