@@ -1,7 +1,9 @@
 extern crate proc_macro2;
 
-use darling::ast::{Data, Style};
-use darling::{FromDeriveInput, FromField};
+use darling::{
+    FromDeriveInput, FromField, FromMeta,
+    ast::{Data, Style},
+};
 use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
 
@@ -13,14 +15,33 @@ struct Input {
 }
 
 #[derive(FromField)]
+#[darling(attributes(distilled))]
 struct Field {
     #[darling(default)]
     ident: Option<syn::Ident>,
+
     ty: syn::Type,
+
+    #[darling(default)]
+    pub email: bool,
 }
 
-#[proc_macro_derive(Distilled)]
-pub fn distill_derive(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+// #[derive(Debug, FromMeta)]
+// #[darling(rename_all = "lowercase")]
+// enum Rule {
+//     Email,
+//     Length(LengthArgs),
+// }
+//
+// #[derive(Debug, Default, FromMeta)]
+// #[darling(default)]
+// struct LengthArgs {
+//     min: Option<usize>,
+//     max: Option<usize>,
+// }
+
+#[proc_macro_derive(Distilled, attributes(distilled))]
+pub fn distilled_derive(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let derive_input = parse_macro_input!(item as DeriveInput);
 
     let input = match Input::from_derive_input(&derive_input) {
@@ -32,19 +53,19 @@ pub fn distill_derive(item: proc_macro::TokenStream) -> proc_macro::TokenStream 
 
     let (style, fields) = match input.data {
         Data::Struct(ds) => ds.split(),
-        _ => unreachable!("Distilled only supports structs & struct tuples"),
+        _ => unreachable!("Distilled only supports structs"),
     };
 
     let expanded = match style {
-        Style::Struct => expand_named(name, &fields),
-        Style::Tuple => expand_tuple(name, &fields),
+        Style::Struct => expand_struct(name, &fields),
+        Style::Tuple if fields.len() == 1 => expand_newtype(name, &fields[0]),
         _ => unreachable!(),
     };
 
     expanded.into()
 }
 
-fn expand_named(struct_ident: &syn::Ident, fields: &[Field]) -> proc_macro2::TokenStream {
+fn expand_struct(struct_ident: &syn::Ident, fields: &[Field]) -> proc_macro2::TokenStream {
     let num_fields = fields.len();
 
     let distillers = fields.iter().map(|f| {
@@ -92,49 +113,18 @@ fn expand_named(struct_ident: &syn::Ident, fields: &[Field]) -> proc_macro2::Tok
     }
 }
 
-fn expand_tuple(struct_ident: &syn::Ident, fields: &[Field]) -> proc_macro2::TokenStream {
-    let num_fields = fields.len();
+fn expand_newtype(struct_ident: &syn::Ident, field: &Field) -> proc_macro2::TokenStream {
+    let inner_ty = &field.ty;
 
-    let distillers = fields.iter().enumerate().map(|(i, f)| {
-        let idx = syn::Index::from(i);
-        let ty = &f.ty;
-        let var = syn::Ident::new(&format!("field_{}", i), proc_macro2::Span::call_site());
-        quote! { let #var = <#ty>::distill(value.get(#idx)); }
-    });
-    let checks = (0..num_fields).map(|i| {
-        let var = syn::Ident::new(&format!("field_{}", i), proc_macro2::Span::call_site());
-        quote! { #var.is_ok() }
-    });
-    let unpack = (0..num_fields).map(|i| {
-        let var = syn::Ident::new(&format!("field_{}", i), proc_macro2::Span::call_site());
-        quote! { #var.unwrap() }
-    });
-    let collect_errors = (0..num_fields).map(|i| {
-        let var = syn::Ident::new(&format!("field_{}", i), proc_macro2::Span::call_site());
-        let name = i.to_string();
-        quote! {
-            if #var.is_err() {
-                errors.insert(#name.into(), #var.err().unwrap());
-            }
-        }
-    });
+    println!("EMAIL? {:?}", field.email);
 
     quote! {
         impl ::distilled::Distilled for #struct_ident {
             fn distill<'a, T: Into<Option<&'a serde_json::Value>>>(
                 value: T
             ) -> Result<Self, ::distilled::Error> {
-                let value = value.into().ok_or_else(|| Error::entry("missing_field"))?;
-                let mut errors = std::collections::HashMap::with_capacity(#num_fields);
-
-                #(#distillers)*
-
-                if #(#checks)&&* {
-                    Ok(#struct_ident( #(#unpack),* ))
-                } else {
-                    #(#collect_errors)*
-                    Err(Error::Struct(errors))
-                }
+                let inner = <#inner_ty>::distill(value)?;
+                Ok(#struct_ident(inner))
             }
         }
     }
