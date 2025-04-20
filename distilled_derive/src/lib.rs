@@ -1,10 +1,15 @@
+// TODO:
+// Custom Xform/rule support
+// [ ] Enum support
+// [ ] Vec support
+
 extern crate proc_macro2;
 
 use darling::{
     FromDeriveInput, FromField, FromMeta,
     ast::{Data, Style},
 };
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{DeriveInput, parse_macro_input};
 
 #[derive(FromDeriveInput)]
@@ -22,23 +27,32 @@ struct Field {
 
     ty: syn::Type,
 
-    #[darling(default)]
-    pub email: bool,
+    #[darling(default, multiple)]
+    xforms: Vec<Xform>,
+
+    #[darling(default, multiple)]
+    rules: Vec<Rule>,
 }
 
-// #[derive(Debug, FromMeta)]
-// #[darling(rename_all = "lowercase")]
-// enum Rule {
-//     Email,
-//     Length(LengthArgs),
-// }
-//
-// #[derive(Debug, Default, FromMeta)]
-// #[darling(default)]
-// struct LengthArgs {
-//     min: Option<usize>,
-//     max: Option<usize>,
-// }
+#[derive(Debug, FromMeta)]
+#[darling(rename_all = "lowercase")]
+enum Xform {
+    Trim,
+}
+
+#[derive(Debug, FromMeta)]
+#[darling(rename_all = "lowercase")]
+enum Rule {
+    Email,
+    Length(LengthArgs),
+}
+
+#[derive(Debug, Default, FromMeta)]
+#[darling(default)]
+struct LengthArgs {
+    min: Option<usize>,
+    max: Option<usize>,
+}
 
 #[proc_macro_derive(Distilled, attributes(distilled))]
 pub fn distilled_derive(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -114,18 +128,91 @@ fn expand_struct(struct_ident: &syn::Ident, fields: &[Field]) -> proc_macro2::To
 }
 
 fn expand_newtype(struct_ident: &syn::Ident, field: &Field) -> proc_macro2::TokenStream {
-    let inner_ty = &field.ty;
+    let ty = &field.ty;
 
-    println!("EMAIL? {:?}", field.email);
+    let distilling_ident = format_ident!("__distilling");
+
+    let xforms = build_xforms(&field.xforms, &distilling_ident);
+    let rules = build_rules(&field.rules, &distilling_ident);
 
     quote! {
         impl ::distilled::Distilled for #struct_ident {
             fn distill<'a, T: Into<Option<&'a serde_json::Value>>>(
                 value: T
             ) -> Result<Self, ::distilled::Error> {
-                let inner = <#inner_ty>::distill(value)?;
-                Ok(#struct_ident(inner))
+                let mut #distilling_ident = <#ty>::distill(value)?;
+
+                #(#xforms)*
+
+                #(#rules)*
+
+                Ok(#struct_ident(#distilling_ident))
             }
         }
+    }
+}
+
+// XFORMS
+
+fn build_xforms(xforms: &[Xform], ident: &syn::Ident) -> Vec<proc_macro2::TokenStream> {
+    xforms.iter().map(|x| build_xform(x, ident)).collect()
+}
+
+fn build_xform(xform: &Xform, ident: &syn::Ident) -> proc_macro2::TokenStream {
+    match xform {
+        Xform::Trim => xform_trim(ident),
+    }
+}
+
+fn xform_trim(ident: &syn::Ident) -> proc_macro2::TokenStream {
+    quote! {
+        #ident = {
+            let s: String = #ident.into();
+            s.trim().to_string().into()
+        };
+    }
+}
+
+// RULES
+
+fn build_rules(rules: &[Rule], ident: &syn::Ident) -> Vec<proc_macro2::TokenStream> {
+    rules.iter().map(|x| build_rule(x, ident)).collect()
+}
+
+fn build_rule(rule: &Rule, ident: &syn::Ident) -> proc_macro2::TokenStream {
+    match rule {
+        Rule::Email => rule_email(ident),
+        Rule::Length(args) => rule_length(args, ident),
+        // add more Rule variants here…
+    }
+}
+
+fn rule_email(ident: &syn::Ident) -> proc_macro2::TokenStream {
+    quote! {
+        if !::validator::ValidateEmail::validate_email(&#ident) {
+            return Err(::distilled::Error::entry("email"));
+        }
+    }
+}
+
+fn rule_length(args: &LengthArgs, ident: &syn::Ident) -> proc_macro2::TokenStream {
+    let min_check = args.min.map(|min| {
+        quote! {
+            if #ident.len() < #min {
+                return Err(::distilled::Error::entry("length"));
+            }
+        }
+    });
+    let max_check = args.max.map(|max| {
+        quote! {
+            if #ident.len() > #max {
+                return Err(::distilled::Error::entry("length"));
+            }
+        }
+    });
+
+    quote! {
+        #min_check
+        #max_check
     }
 }

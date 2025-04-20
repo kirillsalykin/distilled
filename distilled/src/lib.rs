@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use validator;
 
 pub trait Distilled: Sized {
     fn distill<'a, T: Into<Option<&'a Value>>>(value: T) -> Result<Self, crate::Error>;

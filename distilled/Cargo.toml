@@ -10,6 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 serde = { version = "1.0.209", features = ["derive"] }
 serde_json = { version = "1.0.140" }
+validator = { version = "0.20"}
 distilled_derive = { path = "../distilled_derive", optional = true }
 
 [features]
