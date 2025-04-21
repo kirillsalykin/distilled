@@ -10,7 +10,17 @@ use std::collections::HashMap;
 use validator;
 
 pub trait Distilled: Sized {
-    fn distill<'a, T: Into<Option<&'a Value>>>(value: T) -> Result<Self, crate::Error>;
+    fn distill<'a, T: Into<Option<&'a Value>>>(value: T) -> Result<Self, Error>;
+}
+
+impl Distilled for () {
+    fn distill<'a, T: Into<Option<&'a Value>>>(value: T) -> Result<Self, Error> {
+        match value.into() {
+            None => Ok(()),
+            Some(v) if v.is_null() => Ok(()),
+            _ => Err(Error::entry("wrong_type")),
+        }
+    }
 }
 
 impl Distilled for String {

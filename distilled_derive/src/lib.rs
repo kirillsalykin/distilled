@@ -1,5 +1,5 @@
 // TODO:
-// Custom Xform/rule support
+// [ ] Custom Xform/rule support
 // [ ] Enum support
 // [ ] Vec support
 
